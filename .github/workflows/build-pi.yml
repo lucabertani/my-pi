@@ -95,6 +95,13 @@ jobs:
         with:
           node-version: '22'
 
+      # Model data (packages/ai/src/providers/data) is generated, not committed:
+      # same step as pi's own build-binaries workflow, before npm ci
+      - name: Hydrate model data
+        if: steps.decision.outputs.build == 'true'
+        shell: bash
+        run: cd pi && npm run hydrate:model-data
+
       - name: Install dependencies
         if: steps.decision.outputs.build == 'true'
         shell: bash
