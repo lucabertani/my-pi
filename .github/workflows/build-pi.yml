@@ -186,7 +186,7 @@ jobs:
           mkdir -p extracted
           export ZIP_PATH="$(cygpath -w "artifact/pi-windows-x64-${{ needs.build.outputs.tag }}.zip")"
           export DEST_PATH="$(cygpath -w extracted)"
-          powershell.exe -NoProfile -NonInteractive -Command "Expand-Archive -LiteralPath $env:ZIP_PATH -DestinationPath $env:DEST_PATH -Force"
+          powershell.exe -NoProfile -NonInteractive -Command 'Expand-Archive -LiteralPath $env:ZIP_PATH -DestinationPath $env:DEST_PATH -Force'
 
       - name: Check assets
         shell: bash
