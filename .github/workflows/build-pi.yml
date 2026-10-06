@@ -1,0 +1,244 @@
+name: Build Pi Latest (Windows)
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: "Forza la build anche senza nuove versioni"
+        type: boolean
+        default: false
+      version:
+        description: "Tag specifico di pi (es: v1.0.4). Vuoto = latest"
+        required: false
+  schedule:
+    - cron: "0 8 * * *"   # ogni giorno alle 08:00 UTC
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pi-windows-build
+  cancel-in-progress: false
+
+env:
+  PI_REPO: earendil-works/pi
+  BUN_VERSION: "1.3.14"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.decision.outputs.build }}
+      tag: ${{ steps.version.outputs.tag }}
+
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      # 🔎 Determina versione pi da usare
+      - name: Get pi version
+        id: version
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            echo "tag=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            TAG=$(curl -fsSL "https://api.github.com/repos/${{ env.PI_REPO }}/releases/latest" | jq -r .tag_name)
+            echo "tag=$TAG" >> $GITHUB_OUTPUT
+          fi
+
+      # 🔎 Versione buildata in precedenza
+      - name: Read stored version
+        id: stored
+        shell: bash
+        run: |
+          if [ -f last_version.txt ] && [ -s last_version.txt ]; then
+            echo "stored=$(tr -d '[:space:]' < last_version.txt)" >> $GITHUB_OUTPUT
+          else
+            echo "stored=none" >> $GITHUB_OUTPUT
+          fi
+
+      # 🧠 Decide se buildare
+      - name: Check if build needed
+        id: decision
+        shell: bash
+        run: |
+          FORCE="${{ github.event.inputs.force_build }}"
+          echo "pi: ${{ steps.version.outputs.tag }} | stored: ${{ steps.stored.outputs.stored }} | force: $FORCE"
+          if [ "$FORCE" = "true" ] || [ "${{ steps.version.outputs.tag }}" != "${{ steps.stored.outputs.stored }}" ]; then
+            echo "build=true" >> $GITHUB_OUTPUT
+          else
+            echo "build=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Stop if no update
+        if: steps.decision.outputs.build == 'false'
+        run: echo "No new pi version"
+
+      # 📥 Clona pi al tag della release
+      - name: Clone pi
+        if: steps.decision.outputs.build == 'true'
+        shell: bash
+        run: git clone --depth 1 --branch ${{ steps.version.outputs.tag }} https://github.com/${{ env.PI_REPO }}.git
+
+      - name: Setup Bun
+        if: steps.decision.outputs.build == 'true'
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Setup Node
+        if: steps.decision.outputs.build == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        if: steps.decision.outputs.build == 'true'
+        shell: bash
+        run: cd pi && npm ci --ignore-scripts
+
+      # Build di tutti i pacchetti del monorepo (dati modelli offline = deterministico)
+      - name: Build packages
+        if: steps.decision.outputs.build == 'true'
+        shell: bash
+        run: cd pi && npm run build:offline
+
+      # ⚡ Esecutivo standalone piu' ottimizzato: bun --compile + --bytecode
+      # (worker espliciti come entrypoint, target x64-baseline per massima compatibilita')
+      - name: Compile pi with bun (--compile --bytecode)
+        if: steps.decision.outputs.build == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd pi/packages/coding-agent
+          mkdir -p release/windows-x64
+          bun build --compile --bytecode --no-compile-autoload-bunfig \
+            --target=bun-windows-x64-baseline \
+            ./dist/bun/cli.js \
+            ./src/utils/image-resize-worker.ts \
+            ./src/extensions/codemode/worker.ts \
+            --outfile release/windows-x64/pi.exe
+
+      # Il binario legge theme/wasm/native helpers dai file accanto a pi.exe
+      - name: Copy binary assets
+        if: steps.decision.outputs.build == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd pi/packages/coding-agent
+          OUT=release/windows-x64
+          cp package.json README.md CHANGELOG.md "$OUT/"
+          cp ../../node_modules/@silvia-odwyer/photon-node/photon_rs_bg.wasm "$OUT/"
+          mkdir -p "$OUT/theme"
+          cp dist/modes/interactive/theme/*.json "$OUT/theme/"
+          mkdir -p "$OUT/assets"
+          cp dist/modes/interactive/assets/* "$OUT/assets/"
+          cp -r dist/core/export-html "$OUT/"
+          cp -r docs "$OUT/"
+          cp -r examples "$OUT/"
+          mkdir -p "$OUT/native/win32-x64/prebuilds"
+          cp -R ../tui/native/win32/prebuilds/win32-x64 "$OUT/native/win32-x64/prebuilds/"
+
+      - name: Create zip
+        if: steps.decision.outputs.build == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd pi/packages/coding-agent/release/windows-x64
+          zip -r "../../pi-windows-x64-${{ steps.version.outputs.tag }}.zip" .
+          ls -lh "../../pi-windows-x64-${{ steps.version.outputs.tag }}.zip"
+
+      - name: Upload artifact
+        if: steps.decision.outputs.build == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pi-windows-x64
+          path: pi/packages/coding-agent/release/pi-windows-x64-${{ steps.version.outputs.tag }}.zip
+          if-no-files-found: error
+
+  # 🔬 Verifica che l'eseguibile parta davvero su Windows prima di pubblicare
+  smoke-test:
+    runs-on: windows-latest
+    needs: build
+    if: needs.build.outputs.build == 'true'
+
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pi-windows-x64
+          path: artifact
+
+      - name: Extract
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p extracted
+          export ZIP_PATH="$(cygpath -w "artifact/pi-windows-x64-${{ needs.build.outputs.tag }}.zip")"
+          export DEST_PATH="$(cygpath -w extracted)"
+          powershell.exe -NoProfile -NonInteractive -Command "Expand-Archive -LiteralPath $env:ZIP_PATH -DestinationPath $env:DEST_PATH -Force"
+
+      - name: Check assets
+        shell: bash
+        run: |
+          test -f extracted/pi.exe
+          test -f extracted/photon_rs_bg.wasm
+          test -d extracted/native/win32-x64/prebuilds
+          test -d extracted/theme
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          extracted/pi.exe --version
+          extracted/pi.exe --help
+
+  # 📦 Pubblicazione release solo dopo che lo smoke test e' passato
+  release:
+    runs-on: ubuntu-latest
+    needs: [build, smoke-test]
+    if: needs.build.outputs.build == 'true'
+
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pi-windows-x64
+          path: artifact
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.build.outputs.tag }}"
+          # Se la release esiste gia' (es. rerun manuale) non la ricreiamo
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG gia' presente, salto la creazione"
+            exit 0
+          fi
+          cp "artifact/pi-windows-x64-$TAG.zip" .
+          gh release create "$TAG" \
+            --title "pi $TAG - Windows (bun --compile --bytecode)" \
+            --notes "Build automatica di pi $TAG per Windows x64, compilata con bun (--compile --bytecode). Contenuto: pi.exe + asset necessari. Per l'installazione/aggiornamento automatico usa install.ps1 da questa repository." \
+            "pi-windows-x64-$TAG.zip"
+
+      - name: Save built version
+        shell: bash
+        run: echo "${{ needs.build.outputs.tag }}" > last_version.txt
+
+      - name: Commit version file
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add last_version.txt
+          git commit -m "Update built pi version to ${{ needs.build.outputs.tag }}"
+          git push
