@@ -155,8 +155,8 @@ jobs:
         run: |
           set -euo pipefail
           cd pi/packages/coding-agent/release/windows-x64
-          zip -r "../../pi-windows-x64-${{ steps.version.outputs.tag }}.zip" .
-          ls -lh "../../pi-windows-x64-${{ steps.version.outputs.tag }}.zip"
+          zip -r "../pi-windows-x64-${{ steps.version.outputs.tag }}.zip" .
+          ls -lh "../pi-windows-x64-${{ steps.version.outputs.tag }}.zip"
 
       - name: Upload artifact
         if: steps.decision.outputs.build == 'true'
