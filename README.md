@@ -2,7 +2,7 @@
 
 This repository tracks the latest released version of [pi](https://github.com/earendil-works/pi) and automatically builds it for Windows.
 
-Every day (08:00 UTC) the GitHub Actions workflow in `.github/workflows/build-pi.yml` checks the latest pi release: when a new version is out, it clones the source at that tag, compiles the CLI with `bun build --compile --bytecode` (standalone executable, bytecode for fastest startup), smoke-tests the exe on a Windows runner, and publishes a GitHub Release containing a zip with `pi.exe` + the assets it needs at runtime.
+Every day (08:00 UTC) the GitHub Actions workflow in `.github/workflows/build-pi.yml` checks the latest pi release: when a new version is out, it clones the source at that tag, compiles the CLI with `bun build --compile` (standalone executable with the Bun runtime embedded), smoke-tests the exe on a Windows runner, and publishes a GitHub Release containing a zip with `pi.exe` + the assets it needs at runtime.
 
 The file `last_version.txt` stores the pi version currently released in this repository.
 
