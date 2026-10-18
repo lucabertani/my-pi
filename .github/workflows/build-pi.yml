@@ -22,7 +22,7 @@ concurrency:
 
 env:
   PI_REPO: earendil-works/pi
-  BUN_VERSION: "1.3.14"
+  BUN_VERSION: "1.4.3"
 
 jobs:
   build:
@@ -113,24 +113,32 @@ jobs:
         shell: bash
         run: cd pi && npm run build:offline
 
-      # Standalone executable with the Bun runtime embedded. --bytecode is
-      # not used: bun's bytecode generation is currently broken for this
-      # codebase and produces binaries that crash at startup (oven-sh/bun#21097,
-      # oven-sh/bun#21137). Workers are explicit entrypoints, x64-baseline
+      # Standalone executable with the Bun runtime embedded and ahead-of-time
+      # bytecode (--compile --bytecode). --format=esm is required: the default
+      # bytecode format (cjs) breaks on pi's import.meta usage and yields an exe
+      # that crashes at startup. Bytecode is tied to the exact Bun version, so
+      # the builder and the --target runtime must be the same version (they are:
+      # both come from BUN_VERSION). Workers are explicit entrypoints, x64-baseline
       # target for maximum compatibility.
-      - name: Compile pi with bun (--compile)
+      - name: Compile pi with bun (--compile --bytecode)
         if: steps.decision.outputs.build == 'true'
         shell: bash
         run: |
           set -euo pipefail
           cd pi/packages/coding-agent
           mkdir -p release/windows-x64
-          bun build --compile --no-compile-autoload-bunfig \
+          bun build --compile --bytecode --format=esm \
+            --no-compile-autoload-bunfig --no-compile-autoload-dotenv \
             --target=bun-windows-x64-baseline \
             ./dist/bun/cli.js \
             ./src/utils/image-resize-worker.ts \
             ./src/extensions/codemode/worker.ts \
-            --outfile release/windows-x64/pi.exe
+            --outfile release/windows-x64/pi.exe 2>&1 | tee bun-build.log
+          # bun exits 0 even when bytecode generation fails (oven-sh/bun#15528)
+          if grep -q "Failed to generate bytecode" bun-build.log; then
+            echo "::error::bun failed to generate bytecode"
+            exit 1
+          fi
 
       # The binary reads theme/wasm/native helpers from files next to pi.exe
       - name: Copy binary assets
@@ -237,8 +245,8 @@ jobs:
           fi
           cp "artifact/pi-windows-x64-$TAG.zip" .
           gh release create "$TAG" \
-            --title "pi $TAG - Windows (bun --compile)" \
-            --notes "Automatic build of pi $TAG for Windows x64, compiled with bun (--compile). Contents: pi.exe + required assets. For automatic install/update use install.ps1 from this repository." \
+            --title "pi $TAG - Windows (bun --compile --bytecode)" \
+            --notes "Automatic build of pi $TAG for Windows x64, compiled with bun (--compile --bytecode, ESM). Contents: pi.exe + required assets. For automatic install/update use install.ps1 from this repository." \
             "pi-windows-x64-$TAG.zip"
 
       - name: Save built version
