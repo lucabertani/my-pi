@@ -238,10 +238,16 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${{ needs.build.outputs.tag }}"
-          # If the release already exists (e.g. manual re-run), don't recreate it
+          # If the release already exists, keep it (e.g. a plain re-run), unless
+          # the run was started with force_build: then replace it with the new build
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG already exists, skipping"
-            exit 0
+            if [ "${{ github.event.inputs.force_build }}" = "true" ]; then
+              echo "Release $TAG exists and force_build is set: replacing it"
+              gh release delete "$TAG" --yes
+            else
+              echo "Release $TAG already exists, skipping"
+              exit 0
+            fi
           fi
           cp "artifact/pi-windows-x64-$TAG.zip" .
           gh release create "$TAG" \
@@ -258,5 +264,10 @@ jobs:
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add last_version.txt
-          git commit -m "Update built pi version to ${{ needs.build.outputs.tag }}"
-          git push
+          # Nothing to commit when the version is unchanged (e.g. force_build)
+          if git diff --cached --quiet; then
+            echo "last_version.txt already up to date"
+          else
+            git commit -m "Update built pi version to ${{ needs.build.outputs.tag }}"
+            git push
+          fi
